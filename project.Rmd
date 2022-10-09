@@ -1,0 +1,449 @@
+---
+title: "EVT Project"
+author: "AM Meyer 18450547"
+date: "23/11/2021"
+output: word_document
+---
+# All functions
+```{r}
+# returns maximum likelihood estimates
+gevfits <- function(bmax,r)
+{
+  gevfit <- matrix(nrow=r,ncol=3)
+  for (k in 1:r)
+  {
+    a<- gev.fit(bmax[k,],show=FALSE)
+  gevfit[k,] <- a$mle
+  }
+  return(gevfit)
+}
+
+
+#function to split matrix in blocks
+matsplitter <- function(M, r, c) {
+  splitMatrix <- function(mat, nrow) {
+    split.data.frame(t(mat), ceiling(1:ncol(mat)/ncol(mat)*nrow))
+  }
+  sapply(splitMatrix(M, c), splitMatrix, r)
+}
+
+#function to get the block maxima
+bm <- function(rv,N,r) {
+  bmax <- matrix(nrow=r,ncol=N)
+  for (l in 1:N)
+  {
+   blocks <- matsplitter(rv,r,N)[,l]
+   bmax [,l] <- t(unlist(lapply(blocks, function(x) x[which.max(x)])))
+  }
+  return(bmax)
+} 
+
+# Transforming variables
+xtilde <- function(x,mu,sig,gamma)
+{
+  xtil <- (1+gamma*((x-mu)/sig))^(1/gamma)
+return(xtil)
+}
+
+
+returns <- function(ret,nstonks)
+  {
+  if (is.matrix(ret))
+  { ret <- (as.matrix(ret)) }
+  if (!is.matrix(ret))
+  { ret <- t(as.matrix(ret))}  
+  ret <- (as.matrix(ret))
+  value <- matrix(ncol = length(ret[1,]), nrow = nstonks)
+  value[,1] <- 1+ret[,1] 
+  
+  sum_value <- vector(length = length(value[1,]))
+  sum_value[1] <- sum(value[,1])
+  port <- vector(length = length(ret[1,]))
+  port[1] <- mean(value[,1])
+  
+  
+ 
+  for (i in 2:length(ret[1,]))
+  {
+     for (j in 1:nstonks)
+  {
+  value[j,i] <-  value[j,i-1] * (1+ret[j,i])
+   }
+  sum_value[i] <- sum(value[,i])
+  port[i] <- sum_value[i]/sum_value[i-1]
+  }
+  retta <- port -1
+  
+  return(retta)
+}
+
+blocks <- function(vec,blocksize,nblocks)
+  
+{
+  maxi <- matrix(nrow = length(vec[,1]),ncol  = nblocks)
+  for (i in 1:nblocks)
+  {
+    
+  block <- vec[,((i*blocksize+1)-blocksize):(i*blocksize)]
+  maxi[,i] <- apply(block, 1, max)
+  }
+  return(maxi)
+  
+}
+
+log_g <- function(a)
+{
+  v <- (x[i,]^(-1/a) + y^(-1/a))^a
+  vx <- -(x[i,]^(-1/a) + y^(-1/a))^(a-1) * x[i,]^(-(a+1)/a)
+  vy <- -(x[i,]^(-1/a) + y^(-1/a))^(a-1) * y^(-(a+1)/a) 
+  vxy <- ((a-1)/a)*(x[i,]^(-1/a) + y^(-1/a))^(a-2) * (x[i,]*y)^(-(a+1)/a) 
+  
+  
+  log_g1 <-  (log(vx*vy -vxy) -v) 
+  -sum(log_g1)
+  }
+
+```
+
+# Retrivieving neccesary data
+```{r}
+
+library(quantmod)
+library(PerformanceAnalytics)
+library(ismev)
+library(matrixStats)
+library(ExtDist)
+library(VGAM)
+library(PortfolioAnalytics)
+library(tidyquant)
+
+
+
+#Specify dates where 18261
+#Specfify block size
+blocksize = 22
+nof = 16# number of years
+
+#enddate <- as.Date(18260)
+#startdate <- as.Date(18261-nof*12*blocksize +4)
+enddate <- "2019/12/30"
+startdate <- "2008/06/11"
+
+
+
+
+
+tickers <- c("^J200.JO","JSE.JO","CFR.JO","BTI.JO","NPN.JO","BHP.JO","AGL.JO","FSR.JO","MTN.JO","VOD.JO","CPI.JO","SBK.JO","MNP.JO","IMP.JO","GFI.JO","KIO.JO","ANG.JO","SLM.JO","ABG.JO","SHP.JO","APN.JO","DSY.JO","CLS.JO","REM.JO","BVT.JO","INP.JO","EXX.JO","WHL.JO","MRP.JO","ARI.JO","TFG.JO","HAR.JO","TBS.JO","SPP.JO","CCO.JO","BAW.JO","AVI.JO","MTM.JO","SNT.JO","TRU.JO","CML.JO","PSG.JO","MSM.JO","DRD.JO","IPL.JO","RCL.JO","AFE.JO","SPG.JO","JBL.JO","SNH.JO","DTC.JO","RLO.JO","PAN.JO","PPC.JO","OCE.JO","ACL.JO","AFT.JO","ART.JO","FBR.JO","RBX.JO","HCI.JO","SUI.JO","WBO.JO","MTA.JO","MUR.JO","BAT.JO","CSB.JO","ZED.JO","MIX.JO","BLU.JO","HDC.JO","AEG.JO","ABSP.JO","CAT.JO","ACT.JO","IVT.JO","CLI.JO","GND.JO","LEW.JO","MRF.JO","CLH.JO")
+
+ntick <- as.numeric(length(tickers))
+
+
+
+
+#Calculating returns of all the stocks fot training periods
+
+myStocks <-  lapply(tickers, function(x) {getSymbols(x, 
+                                                 from = startdate , 
+                                                 to = enddate,
+                                                 periodicity = "daily",
+                                                 auto.assign=FALSE)} )
+
+names(myStocks) <- tickers
+adjustedPrices <- lapply(myStocks, Ad)
+adjustedPrices <- do.call(merge, adjustedPrices)
+stockReturns <- Return.calculate(adjustedPrices)[-1]
+names(stockReturns) <- tickers
+head(stockReturns)
+
+#Calculating the returns for the test period
+
+insamp <-  lapply(tickers, function(x) {getSymbols(x, 
+                                                 from = "2020/01/01"  , 
+                                                 to = "2021/11/01",
+                                                 periodicity = "daily",
+                                                 auto.assign=FALSE)} )
+
+
+names(insamp) <- tickers
+
+adjustedPrices1 <- lapply(insamp, Ad)
+adjustedPrices1 <- do.call(merge, adjustedPrices1)
+
+
+stockReturns1 <- Return.calculate(adjustedPrices1)[-1]
+names(stockReturns1) <- tickers
+head(stockReturns1)
+
+#Calculating returns for corona
+
+corona <-  lapply(tickers, function(x) {getSymbols(x, 
+                                                 from = "2020/02/01"  , 
+                                                 to = "2020/05/01",
+                                                 periodicity = "daily",
+                                                 auto.assign=FALSE)} )
+
+names(corona) <- tickers
+
+adjustedPrices2 <- lapply(corona, Ad)
+adjustedPrices2 <- do.call(merge, adjustedPrices2)
+
+
+stockReturns2 <- Return.calculate(adjustedPrices2)[-1]
+names(stockReturns2) <- tickers
+head(stockReturns2)
+
+```
+
+
+
+#Random portfolio
+```{r}
+nop <- 100
+nstocks <- 5
+
+
+
+n <- as.numeric(length(stockReturns[,1]))
+
+sr <- t(stockReturns) #  stock returns in sample
+
+sr[is.na(sr)] <- 0
+
+sr1 <- t(stockReturns1) #stock returns out of sample
+
+sr1[is.na(sr1)] <- 0
+
+sr2 <- t(stockReturns2)  # stock returns for corona
+sr2[is.na(sr2)] <- 0
+
+#calculating returns for stocks 
+srp <- matrix(nrow=ntick,ncol=1)
+srp1 <- matrix(nrow=ntick,ncol=1)
+srp2 <- matrix(nrow=ntick,ncol=1)
+
+for (i in 1:ntick)
+{
+
+srp[i,] <- (prod(returns(sr[i,],1)+1)^(365/4220)-1)*100
+srp1[i,] <- (prod(returns(sr1[i,],1)+1)^(12/22)-1)*100
+srp2[i,] <- (prod(returns(sr2[i,],1)+1)-1)*100
+
+}
+
+
+
+rr <- matrix(nrow=nop,ncol=n)
+rovp <- matrix(nrow=nop,ncol=1)
+rovp1 <- matrix(nrow=nop,ncol=1)
+rovp2 <- matrix(nrow=nop,ncol=1)
+portfolios <- matrix(nrow=nop,ncol=nstocks)
+
+#calculating retuns for portfolios
+
+for (i in 1:nop)
+{
+randomport <- c(sample(length(tickers)-1,nstocks))
+rr[i,] <-  returns(sr[randomport,],nstocks)
+rovp[i,] <- (prod(returns(sr[randomport,],nstocks)+1)^(365/4220)-1)*100
+rovp1[i,] <- (prod(returns(sr1[randomport,],nstocks)+1)^(12/22)-1)*100
+rovp2[i,] <- (prod(returns(sr2[randomport,],nstocks)+1)-1)*100
+portfolios[i,] <- unlist(tickers[randomport])
+
+
+}
+
+
+
+```
+
+
+# Calculating Blox Maxmima
+```{r}
+r <- ntick - 40
+
+new <- -rr
+
+colnames(new) <- colnames(new)
+
+#maxima for stocks
+
+maxima_y <- blocks(-sr,22,135)
+#maximay <- bm(rv =as.matrix(-sr[1:40,]) ,N = n/blocksize, r = 40)
+#maximay1 <- bm(rv =as.matrix(-sr[40:ntick,]) ,N = n/blocksize, r = r)
+
+#maxima_y <- rbind(maximay,maximay1)
+
+#maxima for portfolios
+maximas <- blocks(-rr,22,135)
+
+
+```
+
+# GEV calcs
+
+```{r}
+
+
+
+mley <- gevfits(maxima_y,ntick)
+
+mle <- gevfits(maximas,nop)
+
+colnames(mley) <- c("Location","Scale","Shape") 
+colnames(mle) <- c("Location","Scale","Shape") 
+#rownames(mle) <- tickers
+
+
+
+
+
+```
+
+#Stocks
+```{r}
+
+
+maxima <- maxima_y
+
+y <- xtilde(maxima[1,],mley[1,1],mley[1,2],mley[1,3]) 
+
+maxlen <- length(maxima[1,])
+
+x <- matrix(nrow =ntick-1, ncol = maxlen)
+
+tailindex <- vector(length=ntick-1)
+
+
+for (i in 1:ntick-1)
+{
+x[i,] <- xtilde(maxima[i+1,],mley[i+1,1],mley[i+1,2],mley[i+1,3])
+
+# Log of the density function of the logistic family
+
+#fit_norm <- mle2(log_g, start = list(a = 0.1))
+                 
+#alpha <- optimize(log_g ,                    # Apply optimize
+        #interval = c(0, 1))$minimum
+
+alphaFit <- mle2(minuslogl = log_g, start = list(a = 0.5), parameters = list(a=a), method = 'L-BFGS-B', lower = 0.01, upper = 0.99)
+
+alpha1 <- alphaFit@coef
+
+
+
+tailindex[i] <- 2-2^(alpha1)
+}
+
+
+marketindex  <- c(srp[1,],srp1[1,],srp2[1,])
+
+sresults <- cbind(as.matrix(tailindex),srp[-1,],srp1[-1,],srp2[-1,])
+rownames(sresults) <-  tickers[-1]
+colnames(sresults) <-  (c("Lower tail depence","In sample","Out of sample","Out 2"))
+
+
+maxest <- mley[-1,]
+rownames(maxest) <- tickers[-1]
+
+maxest <- maxest[order(sresults[,1]),][16:80,]
+sresults <- round(sresults[order(sresults[,1]),1:4][16:80,],2)
+
+
+
+sresults 
+
+
+
+mean(sresults[1:5,2])
+mean(sresults[60:65,2])
+
+mean(sresults[1:5,3])
+mean(sresults[60:65,3])
+
+mean(sresults[1:5,4])
+mean(sresults[60:65,4])
+
+
+
+
+
+```
+
+
+# Porfolio
+```{r}
+
+
+
+y <- xtilde(maxima_y[1,],mle[1,1],mle[1,2],mle[1,3]) 
+
+maxlen <- length(maximas[1,])
+
+x <- matrix(nrow =nop, ncol = maxlen)
+
+tailindexs <- vector(length=nop)
+
+for (i in 1:nop)
+{
+x[i,] <- xtilde(maximas[i,],mle[i,1],mle[i,2],mle[i,3])
+
+# Log of the density function of the logistic family
+
+#fit_norm <- mle2(log_g, start = list(a = 0.1))
+                 
+alpha1 <- optimize(log_g ,                    # Apply optimize
+        interval = c(0, 1))$minimum
+
+#alphaFit <- mle2(minuslogl = log_g, start = list(a = 0.5), parameters = list(a=a), method = 'L-BFGS-B', lower = 0.01, upper = 0.99)
+
+#alpha1 <- alphaFit@coef
+
+tailindexs[i] <- 2-2^(alpha1)
+}
+
+
+results <- cbind(as.data.frame(cbind(as.matrix(tailindexs),rovp,rovp1,rovp2)),as.data.frame(portfolios))
+results <- results[order(results[,1]),]
+results
+
+
+mean(results[1:10,2])
+mean(results[9991:10000,2])
+
+
+mean(results[1:10,3])
+mean(results[9991:10000,3])
+
+mean(results[1:10,4])
+mean(results[9981:,4])
+
+View(results)
+
+#plot the profile likelihood graph
+
+
+
+
+```
+
+# Skew
+
+```{r}
+art <- vector(length= ntick)
+art2 <- vector(length = ntick)
+art3 <- vector(length = ntick)
+for (i in 1:ntick)
+{
+  art[i] <- kurtosis(stockReturns1[,i])
+  art2[i] <- skewness(sr[i,])
+  art3[i] <- var(sr[i,])
+}
+
+cor(as.vector(tailindex),as.vector(art[-1]))
+cor.test(as.vector(tailindex),as.vector(art[-1]), method="pearson")
+cor(as.vector(tailindex),as.vector(art2[-1]))
+cor.test(as.vector(tailindex),as.vector(art2[-1]), method="pearson")
+cor(as.vector(tailindex),as.vector(art3[-1]))
+cor.test(as.vector(tailindex),as.vector(art3[-1]), method="pearson")
+```
+
